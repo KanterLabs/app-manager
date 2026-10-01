@@ -32,6 +32,9 @@ directories for the invocation. It does not expose a developer home,
 outputs stay under `dist/`; use direct `ci/package` for a host setup that needs
 a custom reviewed path below that tree. Fedora builds use `target/fedora43` so
 they do not consume artifacts produced by a different host toolchain.
+Run the wrapper as a normal non-root account. It builds the disposable
+`appmanager` image account with the caller's numeric UID/GID, verifies that
+both numeric and name-based identity lookups work, and rejects root callers.
 
 Use `ci/check all` when a complete local pass is useful. The commands fail
 when a required tool or dependency is absent; do not work around a failed
@@ -46,8 +49,9 @@ profiles, fixtures, logs, or test artifacts.
 
 Fork pull requests are not executed on the trusted homelab runner pool. Run
 the commands locally and include their results when a change needs a native
-desktop environment. Same-repository PRs use the canonical CI workflow and
-may be cancelled when superseded. Do not use `pull_request_target` to execute
+desktop environment. Same-repository PRs use the public-mirror CI workflow and
+may be cancelled when superseded. Gitea remains the canonical KanterLabs source
+and deployment boundary. Do not use `pull_request_target` to execute
 contributor code.
 
 ## Packaging and releases
@@ -57,9 +61,13 @@ installed. The portable `ci/container-build package` command installs those
 locked dependencies inside the Fedora builder first. Both paths build the
 Fedora-target RPM plus available Debian/Linux archive outputs. The Linux
 archive contains `app-manager-desktop`, `appctl`, `app-manager-broker`,
-`LICENSE`, and `README.md`; the CLI and broker are built with `--locked` before
-the Tauri build. Both paths then write checksums, a schema-1 release manifest,
-and package evidence under `dist/`.
+`LICENSE`, `README.md`, `CONTRIBUTING.md`, and the complete `docs/` and
+`examples/` trees; the CLI and broker are built with `--locked` before the
+Tauri build. Both paths then write checksums, a schema-1 release manifest, and
+package evidence under `dist/`.
+The portable builder also runs the release-binary native smoke harness under
+Xvfb and a private D-Bus session; CI retains candidate artifacts only after
+that smoke step passes.
 The package command stages output and refuses to overwrite an existing
 destination; choose a fresh `OUTPUT_DIR`, `RELEASE_MANIFEST_PATH`, and
 `PACKAGE_EVIDENCE_PATH` for a second direct local build.

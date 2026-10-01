@@ -29,11 +29,11 @@ Environment overrides:
   SKIP_TAURI_BUILD=1    collect an already-built bundle for local diagnostics
 
 The command never publishes. It builds app-manager-cli and app-manager-broker
-with --locked before Tauri, creates a Linux archive containing app-manager-desktop,
-appctl, app-manager-broker, LICENSE, and README.md, then writes SHA256SUMS, a
-release-tools schema-1 manifest, and machine-readable package evidence for the
-INFRA164 integration. Native desktop dependencies must already be available on
-the runner.
+with --locked before Tauri, creates a Linux archive containing the exact
+executables, contributor/setup documents, and docs/examples trees, then writes
+SHA256SUMS, a release-tools schema-1 manifest, and machine-readable package
+evidence for the INFRA164 integration. Native desktop dependencies must already
+be available on the runner.
 EOF
 }
 
@@ -146,9 +146,18 @@ for executable in app-manager-desktop appctl app-manager-broker; do
     missing_payload+=("$binary")
   fi
 done
-for document in LICENSE README.md; do
+for document in LICENSE README.md CONTRIBUTING.md; do
   if [[ ! -f "$document" || -L "$document" ]]; then
     missing_payload+=("$document")
+  fi
+done
+for tree in docs examples; do
+  if [[ ! -d "$tree" || -L "$tree" ]]; then
+    missing_payload+=("$tree/")
+  elif [[ -n "$(find "$tree" -type l -print -quit)" ]]; then
+    missing_payload+=("$tree contains a symlink")
+  elif [[ -z "$(find "$tree" -type f -print -quit)" ]]; then
+    missing_payload+=("$tree contains no regular files")
   fi
 done
 
@@ -171,7 +180,8 @@ else
   for executable in app-manager-desktop appctl app-manager-broker; do
     cp -- "$target_root/release/$executable" "$archive_payload/$executable"
   done
-  cp -- LICENSE README.md "$archive_payload/"
+  cp -- LICENSE README.md CONTRIBUTING.md "$archive_payload/"
+  cp -a -- docs examples "$archive_payload/"
   tar --create --gzip --file "$portable_archive" \
     --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
     --directory "$archive_root" "$archive_name_root"

@@ -196,10 +196,6 @@ class WebDriverClient:
             raise WebDriverError(f"Unexpected elements payload: {result!r}")
         return [self._element_id(item) for item in result]
 
-    def find_element(self, using: str, value: str) -> str:
-        response = self.request("POST", self._session_path("/element"), {"using": using, "value": value})
-        return self._element_id(self._value(response))
-
     def element_text(self, element: str) -> str:
         value = self._value(self.request("GET", self._session_path(f"/element/{element}/text")))
         return "" if value is None else str(value)
@@ -209,19 +205,6 @@ class WebDriverClient:
             self.request("GET", self._session_path(f"/element/{element}/attribute/{name}"))
         )
         return None if value is None else str(value)
-
-    def click(self, element: str) -> None:
-        self.request("POST", self._session_path(f"/element/{element}/click"), {})
-
-    def clear(self, element: str) -> None:
-        self.request("POST", self._session_path(f"/element/{element}/clear"), {})
-
-    def send_keys(self, element: str, text: str) -> None:
-        self.request(
-            "POST",
-            self._session_path(f"/element/{element}/value"),
-            {"text": text, "value": list(text)},
-        )
 
     def execute(self, script: str, args: Optional[Sequence[Any]] = None) -> Any:
         response = self.request(
@@ -276,30 +259,76 @@ def wait_for_text(client: WebDriverClient, text: str, *, timeout: float = DEFAUL
 
 
 def click_accessible_name(client: WebDriverClient, name: str) -> None:
-    """Click a visible button/link by its accessible text or aria-label."""
+    """Click a visible button/link by its accessible text or aria-label.
+
+    Fedora's WebKitWebDriver supports script execution but can return HTTP
+    500 ``unsupported operation`` for the W3C element-click endpoint.  Keep
+    the lookup accessibility-oriented, then activate the rendered DOM node
+    through the webview's supported ``execute/sync`` endpoint.  The resulting
+    browser click still runs the real React handler and native Tauri IPC.
+    """
 
     def find_and_click() -> bool:
-        for selector in ("button", "a"):
-            for element in client.find_elements("css selector", selector):
-                label = client.element_attribute(element, "aria-label") or client.element_text(element)
-                normalized = " ".join(label.split())
-                # App Manager's navigation buttons put a decorative
-                # aria-hidden icon before their visible label (for example,
-                # "▣Machines").  Matching the visible suffix keeps this
-                # selector tied to the accessible control name rather than to
-                # an icon glyph.
-                if normalized == name or normalized.endswith(name):
-                    client.click(element)
-                    return True
-        return False
+        value = client.execute(
+            """
+            const wanted = String(arguments[0]);
+            const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+            const controls = Array.from(document.querySelectorAll('button, a'));
+            const target = controls.find((element) => {
+              if (element.disabled || !element.getClientRects().length) return false;
+              const aria = normalize(element.getAttribute('aria-label'));
+              const text = normalize(element.innerText || element.textContent);
+              return aria === wanted || text === wanted || text.endsWith(wanted);
+            });
+            if (!target) return false;
+            target.click();
+            return true;
+            """,
+            [name],
+        )
+        return value is True
 
     wait_for(find_and_click, f"accessible control {name!r}")
 
 
 def fill_css(client: WebDriverClient, selector: str, value: str) -> None:
-    element = client.find_element("css selector", selector)
-    client.clear(element)
-    client.send_keys(element, value)
+    """Set a controlled input, textarea, or select through the live DOM.
+
+    WebKitWebDriver's element-clear and element-send-keys endpoints are not
+    implemented in the Fedora runtime.  Calling the native value setter and
+    dispatching bubbling input/change events keeps React's controlled state in
+    sync while exercising the real rendered form and its submit handler.
+    """
+
+    result = client.execute(
+        """
+        const selector = String(arguments[0]);
+        const nextValue = String(arguments[1]);
+        const element = document.querySelector(selector);
+        if (!element) return {status: 'missing'};
+        if (element.disabled || element.readOnly) return {status: 'readonly'};
+        if (!(element instanceof HTMLInputElement ||
+              element instanceof HTMLTextAreaElement ||
+              element instanceof HTMLSelectElement)) {
+          return {status: 'unsupported', tag: element.tagName};
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(
+          Object.getPrototypeOf(element), 'value'
+        );
+        if (!descriptor || typeof descriptor.set !== 'function') {
+          return {status: 'no-setter'};
+        }
+        descriptor.set.call(element, nextValue);
+        if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+          element.dispatchEvent(new Event('input', {bubbles: true}));
+        }
+        element.dispatchEvent(new Event('change', {bubbles: true}));
+        return {status: 'set', value: element.value};
+        """,
+        [selector, value],
+    )
+    if not isinstance(result, Mapping) or result.get("status") != "set":
+        raise SmokeFailure(f"Could not set control {selector!r}: {result!r}")
 
 
 def role_text(client: WebDriverClient, role: str, *, within: Optional[str] = None) -> List[str]:

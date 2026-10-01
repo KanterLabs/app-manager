@@ -36,6 +36,11 @@ Docker socket. Package output remains under the checkout's `dist/` tree; use
 `ci/package` directly when a host setup needs a custom reviewed path below
 that tree. The wrapper directs Cargo and Tauri to `target/fedora43`, keeping
 the Fedora result separate from any host `target/` build.
+Run the wrapper as a normal non-root account. It passes the caller's numeric
+UID/GID into the disposable image, creates `appmanager` with those IDs, and
+checks both the image account map and a matching `id -un`/`id -gn` instance
+before running a build. Root callers are rejected so generated files cannot
+become unexpectedly root-owned.
 
 `ci/check all` runs the complete local set in sequence. `ci/check metadata`
 parses shell, Python, JSON, and workflow files and rejects unmanaged runner
@@ -62,12 +67,13 @@ container engine supplied by the homelab DinD contract. Jobs do not call
 `apt`, `dnf`, `sudo`, or other host mutation commands. The `homelab` jobs still
 use the runner's shared metadata/Node toolchain for short checks.
 
-The public GitHub workflows run only for the canonical `KanterLabs/app-manager`
-repository. A fork pull request is skipped before it reaches the homelab pool;
-the commands above remain the supported local reproduction path. Same-repo PR
-runs may cancel an older run. Release candidates use a repository/version
-concurrency key and never cancel an in-progress candidate. No CI job receives
-publication, deployment, or infrastructure credentials.
+The public GitHub workflows run only for the `KanterLabs/app-manager` mirror.
+Gitea remains the canonical KanterLabs source and deployment boundary. A fork
+pull request is skipped before it reaches the homelab pool; the commands above
+remain the supported local reproduction path. Same-repo PR runs may cancel an
+older run. Release candidates use a repository/version concurrency key and
+never cancel an in-progress candidate. No CI job receives publication,
+deployment, or infrastructure credentials.
 
 ## Native Linux packaging
 
@@ -79,11 +85,13 @@ toolchain support it. If the default build runs on a host without `dpkg-deb`,
 the wrapper records a warning and requests the required RPM target only; an
 explicit `TAURI_BUNDLES=rpm,deb` request fails when its Debian helper is
 missing. If the configured target directory contains all exact release
-executables, the wrapper creates a companion Linux `.tar.gz` archive containing `app-manager-desktop`,
-`appctl`, `app-manager-broker`, `LICENSE`, and `README.md`. The CLI and broker
-are built with `cargo build --release -p app-manager-cli -p app-manager-broker
---locked` before the Tauri build, and the archive only accepts those exact
-names.
+executables and the reviewed setup tree, the wrapper creates a companion Linux
+`.tar.gz` archive containing `app-manager-desktop`, `appctl`,
+`app-manager-broker`, `LICENSE`, `README.md`, `CONTRIBUTING.md`, and the
+complete `docs/` and `examples/` trees. The CLI and broker are built with
+`cargo build --release -p app-manager-cli -p app-manager-broker --locked`
+before the Tauri build, and the archive only accepts those exact executable
+names and document inventory.
 
 The Fedora builder installs and verifies these package names:
 
@@ -95,13 +103,22 @@ openssl webkitgtk6.0 rpm-build python3-pyyaml git openssh-clients openssh-server
 xorg-x11-server-Xvfb file tar unzip gzip xz
 ```
 
+The disposable `appmanager` account has the literal `*` shadow marker, which
+cannot be used as a password without marking the account as locked. Its SSH
+fixture disables `PasswordAuthentication` and keyboard-interactive login;
+native smoke tests still supply their own loopback key fixture when needed.
+
 The Tauri bundler remains the authority for RPM/DEB helper requirements. The
 workflow does not require `rpmbuild`, a desktop session, or a system package
 manager on the host; a missing dependency is reported by `pkg-config` or the
 Tauri build with an actionable failure. Native UI smoke commands can use the
 Fedora `WebKitWebDriver` supplied by `webkitgtk6.0`; Fedora does not publish a
 separate `webkit2gtk4.1driver` package. The builder also installs the pinned
-`tauri-driver` 2.1.0 binary; a harness owns its `Xvfb` and D-Bus lifecycle.
+`tauri-driver` 2.1.0 binary; the portable package wrapper runs
+`tests/desktop-smoke.py` against the assembled release binary under a private
+`:99` Xvfb display and `dbus-run-session`. Workflow artifact upload follows
+that native smoke step, so an uploaded candidate has passed both packaging and
+runtime checks.
 
 The package wrapper stages all files in a private `mktemp` directory and moves
 them into a new subdirectory under `dist/`. It refuses to overwrite an existing
@@ -137,8 +154,8 @@ or size mismatches.
 
 ## Release candidate flow
 
-The release workflow accepts a `v*.*.*` tag or a broker-compatible manual
-dispatch from the canonical main workflow revision. Manual dispatch supplies
+The public-mirror release workflow accepts a `v*.*.*` tag or a broker-compatible
+manual dispatch from the protected `main` revision. Manual dispatch supplies
 the required `expected_commit` and `request_id` inputs; the version is derived
 from the checked-out workspace. The workflow checks that the selected commit
 is the checkout and is an ancestor of the protected `main` history before any
@@ -148,8 +165,8 @@ contains the request ID so broker polling can correlate the build. The
 workflow uploads the bundle for review and retains it for 14 days. It has no
 publish step, no release token, and no deployment action.
 
-Canonical publication, durable retention, forge receipts, and public-download
-verification remain the existing INFRA164 integration. That integration must
+Canonical Gitea publication, durable retention, forge receipts, and
+public-download verification remain the existing INFRA164 integration. That integration must
 promote the exact retained bytes after checking `release-manifest.json` and
 `SHA256SUMS`, and its complete published receipt must carry the matching
 `source_commit` and `manifest_sha256`. Receipt completeness and artifact hash

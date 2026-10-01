@@ -48,6 +48,16 @@ case "$engine" in
     ;;
 esac
 
+# Bind mounts are owned by the caller. Build the disposable image account with
+# the same IDs so npm/Cargo caches and generated artifacts remain usable after
+# the container exits. A root caller would defeat that ownership boundary and
+# is deliberately rejected; use an ordinary local account instead.
+host_uid=$(id -u)
+host_gid=$(id -g)
+if [[ "$host_uid" == 0 || "$host_gid" == 0 ]]; then
+  die 'ci/container-build requires a non-root caller (UID and GID must be non-zero)'
+fi
+
 raw_repo=${GITHUB_REPOSITORY:-app-manager}
 repo_name=${raw_repo##*/}
 repo_name=$(printf '%s' "$repo_name" | tr -c 'A-Za-z0-9_.-' '-')
@@ -70,19 +80,49 @@ chmod 700 "$cache_root" "$cache_root/cargo" "$cache_root/npm" "$cache_root/home"
 
 image_ref="app-manager-fedora43-builder:${repo_name}-${run_name}"
 "$engine" build \
+  --build-arg "APP_MANAGER_UID=${host_uid}" \
+  --build-arg "APP_MANAGER_GID=${host_gid}" \
   --file "$ROOT_DIR/ci/Dockerfile.fedora" \
   --tag "$image_ref" \
   "$ROOT_DIR/ci"
 
-host_uid=$(id -u)
-host_gid=$(id -g)
+inspect_image_user() {
+  # Inspect the account as image root, including the intentionally unusable
+  # password and the fixture's password-authentication policy.
+  "$engine" run --rm "$image_ref" bash -Eeuo pipefail -c '
+    expected_uid=$1
+    expected_gid=$2
+    [[ "$(id -u appmanager)" == "$expected_uid" ]]
+    [[ "$(id -g appmanager)" == "$expected_gid" ]]
+    [[ "$(getent passwd appmanager | cut -d: -f6)" == /home/appmanager ]]
+    [[ "$(getent shadow appmanager | cut -d: -f2)" == "*" ]]
+    grep -Fqx "PasswordAuthentication no" /etc/ssh/sshd_config.d/99-app-manager-ci.conf
+  ' -- "$host_uid" "$host_gid"
+
+  # Then instantiate with the exact caller IDs and require name resolution;
+  # this catches an image that has numeric IDs but no usable passwd/group map.
+  "$engine" run --rm --user "${host_uid}:${host_gid}" "$image_ref" \
+    bash -Eeuo pipefail -c '
+      expected_uid=$1
+      expected_gid=$2
+      [[ "$(id -u)" == "$expected_uid" ]]
+      [[ "$(id -g)" == "$expected_gid" ]]
+      [[ "$(id -un)" == appmanager ]]
+      [[ "$(id -gn)" == appmanager ]]
+    ' -- "$host_uid" "$host_gid"
+
+  printf 'ci/container-build: verified appmanager uid=%s gid=%s\n' \
+    "$host_uid" "$host_gid"
+}
+
+inspect_image_user
 
 case "$mode" in
   rust)
     container_command=$'set -Eeuo pipefail\nnpm ci --prefix web --ignore-scripts\nci/check rust'
     ;;
   package)
-    container_command=$'set -Eeuo pipefail\nnpm ci\nnpm ci --prefix web --ignore-scripts\nci/package'
+    container_command=$'set -Eeuo pipefail\nnpm ci\nnpm ci --prefix web --ignore-scripts\nci/package\ntest -x "$CARGO_TARGET_DIR/release/app-manager-desktop"\ntest -f tests/desktop-smoke.py\nXvfb :99 -screen 0 1280x900x24 -nolisten tcp >/tmp/app-manager-xvfb.log 2>&1 &\nxvfb_pid=$!\nstop_xvfb() { kill "$xvfb_pid" 2>/dev/null || true; wait "$xvfb_pid" 2>/dev/null || true; }\ntrap stop_xvfb EXIT\nfor attempt in {1..20}; do kill -0 "$xvfb_pid" 2>/dev/null && break; sleep 0.1; done\nkill -0 "$xvfb_pid"\nsleep 1\nDISPLAY=:99 dbus-run-session -- python3 tests/desktop-smoke.py --binary "$CARGO_TARGET_DIR/release/app-manager-desktop"'
     ;;
 esac
 

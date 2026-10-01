@@ -47,7 +47,7 @@ sudo dnf install <package-reported-by-dnf>
 Install the intermediary with the pinned Rust toolchain when it is absent:
 
 ```bash
-cargo install tauri-driver --locked
+cargo install tauri-driver --version 2.1.0 --locked
 ```
 
 Build the native release binary separately. The smoke harness never builds or
@@ -108,6 +108,14 @@ empty shelf contains no demo fixture data. It then:
    it, and attempts `window.__TAURI_INTERNALS__.invoke('get_snapshot')` from
    that origin. A rejected navigation, an absent bridge, or a denied command
    is accepted; an allowed snapshot is a failure.
+
+On Fedora's WebKitWebDriver, the W3C element-click, element-clear, and
+element-send-keys endpoints can report `unsupported operation`; the harness
+uses WebDriver's `execute/sync` endpoint for all control mutations. It clicks
+the matching rendered button or link by accessible name and sets controlled
+input, textarea, or select values through the native DOM value setter followed
+by bubbling `input`/`change` events. These operations still dispatch the real
+DOM events handled by React and the native Tauri bridge.
 
 The test only cleans the temporary directory and process group it owns. It
 does not call `killall`, delete an existing App Manager data directory, touch

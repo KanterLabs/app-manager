@@ -15,6 +15,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -47,6 +48,19 @@ NATIVE_PACKAGE_NAMES = [
     "openssh-clients",
     "openssh-server",
     "xorg-x11-server-Xvfb",
+]
+PORTABLE_ARCHIVE_DOCUMENTS = [
+    "LICENSE",
+    "README.md",
+    "CONTRIBUTING.md",
+    "docs/broker.md",
+    "docs/ci.md",
+    "docs/desktop-verification.md",
+    "docs/implementation-contract.md",
+    "docs/recovery.md",
+    "examples/broker-config.example.json",
+    "examples/demo-state.json",
+    "examples/gnome-source.example.json",
 ]
 
 
@@ -230,6 +244,15 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def _command_version(command: str, flag: str = "--version") -> str | None:
+    """Return a successful tool version, or omit an unavailable command.
+
+    A present executable that exits unsuccessfully is a broken builder tool,
+    rather than evidence. Fail the evidence step instead of recording a usage
+    or error line as a version string.
+    """
+
+    if shutil.which(command) is None:
+        return None
     try:
         result = subprocess.run(
             [command, flag],
@@ -238,10 +261,86 @@ def _command_version(command: str, flag: str = "--version") -> str | None:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    output = (result.stdout or result.stderr).strip()
-    return output.splitlines()[0] if output else None
+    except (OSError, subprocess.SubprocessError) as exc:
+        fail(f"could not execute {command} {flag}: {exc}")
+    if result.returncode != 0:
+        fail(f"{command} {flag} exited with status {result.returncode}")
+    output = (result.stdout or "").strip()
+    if not output:
+        fail(f"{command} {flag} produced no version output")
+    return output.splitlines()[0]
+
+
+def _cargo_install_version(crate: str) -> str:
+    """Resolve an installed cargo crate without invoking its CLI flags.
+
+    ``tauri-driver`` does not implement ``--version``. The builder installs it
+    with Cargo, so use Cargo's install inventory first and retain a metadata
+    fallback for older Cargo versions. Search both the invocation cache and
+    the image-owned Cargo home because the wrapper intentionally changes
+    ``CARGO_HOME`` for mutable registry files.
+    """
+
+    cargo = shutil.which("cargo")
+    if cargo is None:
+        fail(f"cargo is required to inspect installed crate {crate}")
+
+    homes: list[Path] = []
+    configured_home = os.environ.get("CARGO_HOME")
+    if configured_home:
+        homes.append(Path(configured_home))
+    homes.append(Path("/opt/cargo"))
+    unique_homes: list[Path] = []
+    for home in homes:
+        if home not in unique_homes:
+            unique_homes.append(home)
+
+    version_pattern = re.compile(
+        rf"^\s*{re.escape(crate)}\s+v?([0-9][0-9A-Za-z.+_-]*)\s*:\s*$"
+    )
+    for home in unique_homes:
+        try:
+            result = subprocess.run(
+                [cargo, "install", "--list"],
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=10,
+                env={**os.environ, "CARGO_HOME": str(home)},
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode != 0:
+            continue
+        for line in (result.stdout or "").splitlines():
+            match = version_pattern.fullmatch(line)
+            if match:
+                return f"{crate} v{match.group(1)}"
+
+    # Cargo 1.78+ records the same inventory in .crates2.json. This fallback
+    # also handles a wrapper cache where `cargo install --list` cannot inspect
+    # the image-owned binary directory.
+    for home in unique_homes:
+        metadata_path = home / ".crates2.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        installs = metadata.get("installs") if isinstance(metadata, dict) else None
+        if not isinstance(installs, dict):
+            continue
+        for key in installs:
+            if not isinstance(key, str):
+                continue
+            match = re.fullmatch(
+                rf"{re.escape(crate)}\s+v?([0-9][0-9A-Za-z.+_-]*)"
+                rf"(?:\s+\([^()\r\n]+\))?",
+                key,
+            )
+            if match:
+                return f"{crate} v{match.group(1)}"
+
+    fail(f"installed crate {crate} has no readable Cargo version inventory")
 
 
 def _os_release() -> dict[str, str]:
@@ -264,7 +363,14 @@ def _os_release() -> dict[str, str]:
 def builder_command(args: argparse.Namespace) -> dict[str, Any]:
     toolchain: dict[str, str] = {}
     for command in ("rustc", "cargo", "rustup", "tauri-driver", "node", "npm"):
-        version = _command_version(command)
+        if command == "tauri-driver":
+            version = (
+                _cargo_install_version(command)
+                if shutil.which(command) is not None
+                else None
+            )
+        else:
+            version = _command_version(command)
         if version:
             toolchain[command] = version
 
@@ -314,26 +420,30 @@ def builder_command(args: argparse.Namespace) -> dict[str, Any]:
             fail(f"could not inspect portable archive {archive}: {exc}")
         for member in members:
             validate_relative_path(member, "portable archive member")
+        archive_roots = {PurePosixPath(member).parts[0] for member in members}
+        if len(archive_roots) != 1:
+            fail("portable archive must contain one top-level directory")
+        archive_root = next(iter(archive_roots))
         required_members = {
-            "app-manager-desktop",
-            "appctl",
-            "app-manager-broker",
-            "LICENSE",
-            "README.md",
+            f"{archive_root}/{executable}"
+            for executable in ("app-manager-desktop", "appctl", "app-manager-broker")
         }
-        archive_basenames = {PurePosixPath(member).name for member in members}
-        if not required_members <= archive_basenames:
-            missing = ", ".join(sorted(required_members - archive_basenames))
+        required_members.update(
+            f"{archive_root}/{document}" for document in PORTABLE_ARCHIVE_DOCUMENTS
+        )
+        if not required_members <= set(members):
+            missing = ", ".join(sorted(required_members - set(members)))
             fail(f"portable archive is missing required members: {missing}")
         value["portable_archive"] = {
             "name": archive.name,
+            "root": archive_root,
             "members": members,
             "required_executables": [
                 "app-manager-desktop",
                 "appctl",
                 "app-manager-broker",
             ],
-            "required_documents": ["LICENSE", "README.md"],
+            "required_documents": PORTABLE_ARCHIVE_DOCUMENTS,
         }
 
     write_json(Path(args.output), value)

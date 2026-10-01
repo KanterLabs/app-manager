@@ -12,7 +12,7 @@ permissions:
 # Fork PRs are intentionally skipped: the shared homelab pool is trusted
 # infrastructure, so untrusted revisions must not execute there. A fork can
 # run the same commands locally, or a reviewed commit can be dispatched from
-# the canonical repository.
+# the trusted public-mirror repository.
 concurrency:
   group: app-manager-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -105,7 +105,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Build Fedora RPM and available Linux bundles
+      - name: Build bundles and run native desktop smoke
         run: ci/container-build package
       - name: Retain package evidence for this revision
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

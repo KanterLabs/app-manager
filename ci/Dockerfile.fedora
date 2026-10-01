@@ -9,6 +9,11 @@ ARG NODE_SHA256=9a6bc82f9b491279147219f6a18add1e18424dce90d41d2a5fcd69d4924ba3aa
 ARG RUST_VERSION=1.96.0
 ARG RUSTUP_VERSION=1.29.0
 ARG RUSTUP_SHA256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
+# The wrapper passes the caller's non-root IDs so bind-mounted caches and
+# generated files have the same ownership inside and outside the container.
+# Keep usable defaults for direct image inspection.
+ARG APP_MANAGER_UID=1000
+ARG APP_MANAGER_GID=1000
 
 ENV CARGO_HOME=/opt/cargo \
     RUSTUP_HOME=/opt/rustup \
@@ -108,7 +113,21 @@ RUN dnf -y install openssl webkitgtk6.0 \
     && command -v openssl \
     && command -v WebKitWebDriver
 
-RUN useradd --create-home --home-dir /home/appmanager --shell /bin/bash appmanager \
+RUN case "${APP_MANAGER_UID}" in ''|*[!0-9]*) exit 1 ;; esac \
+    && case "${APP_MANAGER_GID}" in ''|*[!0-9]*) exit 1 ;; esac \
+    && (( APP_MANAGER_UID > 0 && APP_MANAGER_GID > 0 )) \
+    && ! getent passwd "${APP_MANAGER_UID}" >/dev/null \
+    && ! getent group "${APP_MANAGER_GID}" >/dev/null \
+    && groupadd --gid "${APP_MANAGER_GID}" appmanager \
+    && useradd --uid "${APP_MANAGER_UID}" --gid "${APP_MANAGER_GID}" \
+      --create-home --home-dir /home/appmanager --shell /bin/bash \
+      --password '*' appmanager \
+    && [[ "$(getent shadow appmanager | cut -d: -f2)" == '*' ]] \
+    && install -d -m 0755 /etc/ssh/sshd_config.d \
+    && printf '%s\n' \
+      'PasswordAuthentication no' \
+      'KbdInteractiveAuthentication no' \
+      > /etc/ssh/sshd_config.d/99-app-manager-ci.conf \
     && mkdir -p /workspace /cache \
     && chmod 1777 /workspace /cache \
     && pkg-config --exists gtk+-3.0 webkit2gtk-4.1 libsoup-3.0 openssl librsvg-2.0 \

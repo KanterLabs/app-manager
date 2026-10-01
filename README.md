@@ -32,6 +32,27 @@ The app starts empty. It never enrolls a machine, dispatches a build, or install
 an app just because it was opened. The separate browser preview uses `?demo=1`
 and labels all sample data. Demo actions never call SSH, a broker, or an installer.
 
+## Install the Fedora candidate
+
+The first packaging target is Fedora 43 on x86_64. Download the RPM and
+`SHA256SUMS` from the same verified candidate, check its checksum, then install:
+
+```sh
+sha256sum --check SHA256SUMS
+sudo dnf install './App Manager-0.1.0-1.x86_64.rpm'
+app-manager-desktop
+```
+
+The RPM installs the desktop app and declares its GTK, WebKitGTK and OpenSSH
+runtime dependencies. The accompanying `app-manager-linux-amd64.tar.gz`
+contains the desktop executable, `appctl`, the optional broker, and setup docs.
+Extract it into a new directory and run `./app-manager-0.1.0/app-manager-desktop`
+with the same runtime dependencies installed. This archive is built against
+Fedora 43; compatibility with other distributions has not been verified.
+
+CI artifacts are candidates until the shared release pipeline publishes them
+with a complete receipt. No public binary release is claimed by this README.
+
 ## Run from source
 
 Use the pinned Rust toolchain and Node 22.22.1 or a compatible Node 22 release.
