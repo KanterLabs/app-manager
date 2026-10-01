@@ -1,0 +1,38 @@
+[package]
+name = "app-manager-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "app_manager_broker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "app-manager-broker"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+app-manager-core.workspace = true
+async-trait = "0.1"
+axum = "0.8"
+chrono.workspace = true
+fs2.workspace = true
+hex.workspace = true
+hmac = "0.12"
+http = "1"
+jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+subtle = "2"
+tokio.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tower = "0.5"

@@ -1,0 +1,15 @@
+{
+  "name":"app-manager",
+  "version":"0.1.0",
+  "private":true,
+  "license":"MIT",
+  "scripts":{
+    "tauri":"tauri",
+    "dev":"tauri dev",
+    "build":"tauri build",
+    "build:desktop":"tauri build --no-bundle",
+    "check":"ci/check",
+    "package":"ci/package"
+  },
+  "devDependencies":{"@tauri-apps/cli":"^2.0.0"}
+}

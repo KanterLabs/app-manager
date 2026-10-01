@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Fork PRs are intentionally skipped: the shared homelab pool is trusted
+# infrastructure, so untrusted revisions must not execute there. A fork can
+# run the same commands locally, or a reviewed commit can be dispatched from
+# the canonical repository.
+concurrency:
+  group: app-manager-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  metadata:
+    name: Metadata and workflow checks
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: homelab
+    timeout-minutes: 10
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Validate scripts, JSON, YAML, and workflow policy
+        run: ci/check metadata
+
+  frontend:
+    name: Frontend typecheck and unit tests
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: homelab
+    timeout-minutes: 15
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install locked frontend dependencies
+        run: npm ci --prefix web --ignore-scripts
+      - name: Run frontend checks
+        run: ci/check frontend
+
+  rust:
+    name: Rust workspace checks
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: homelab-heavy
+    timeout-minutes: 60
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Run Rust formatting, lint, and tests
+        run: ci/container-build rust
+
+  browser:
+    name: Production web build and browser checks
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: homelab-heavy
+    timeout-minutes: 25
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install locked frontend dependencies
+        run: npm ci --prefix web --ignore-scripts
+      - name: Build the production web bundle
+        run: ci/check browser
+
+  package:
+    name: Linux desktop package candidate
+    needs: [metadata, frontend, rust, browser]
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: homelab-heavy
+    timeout-minutes: 60
+    steps:
+      - name: Check out the revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build Fedora RPM and available Linux bundles
+        run: ci/container-build package
+      - name: Retain package evidence for this revision
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-manager-ci-package-${{ github.sha }}
+          path: |
+            dist/release/
+            dist/release-manifest.json
+            dist/package-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+
+  ci-gate:
+    name: CI gate
+    needs: [metadata, frontend, rust, browser, package]
+    if: >-
+      always() && github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: homelab
+    timeout-minutes: 5
+    steps:
+      - name: Require every declared check
+        env:
+          METADATA_RESULT: ${{ needs.metadata.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          set -Eeuo pipefail
+          for result in "$METADATA_RESULT" "$FRONTEND_RESULT" "$RUST_RESULT" "$BROWSER_RESULT" "$PACKAGE_RESULT"; do
+            test "$result" = success || { echo "required CI job result: $result" >&2; exit 1; }
+          done

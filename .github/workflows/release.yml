@@ -1,0 +1,194 @@
+name: Release candidate
+
+run-name: App Manager release ${{ inputs.request_id || github.ref_name || github.sha }}
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: Exact 40-character canonical commit SHA to package
+        required: true
+        type: string
+      request_id:
+        description: Broker request correlation identifier
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# A release candidate is an immutable source/version pair. Let it finish so
+# the retained artifact can be inspected or retried by the canonical release
+# integration; do not cancel one candidate behind another.
+concurrency:
+  group: app-manager-release-${{ inputs.request_id || github.ref_name || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan exact release source
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      github.event.repository.full_name == github.repository
+    runs-on: homelab
+    timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.identity.outputs.source_sha }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - name: Check out the requested source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || inputs.expected_commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate source, tag, and version identity
+        id: identity
+        env:
+          RELEASE_REF_INPUT: ${{ github.event_name == 'push' && github.sha || inputs.expected_commit }}
+          REQUEST_ID_INPUT: ${{ inputs.request_id || format('tag-{0}', github.run_id) }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$RELEASE_REF_INPUT" =~ ^[0-9a-f]{40}$ ]] || { echo 'expected_commit must be a full lowercase SHA' >&2; exit 1; }
+          test "$(git rev-parse HEAD)" = "$RELEASE_REF_INPUT"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$RELEASE_REF_INPUT" refs/remotes/origin/main || {
+            echo 'expected_commit must be an ancestor of the protected main branch' >&2
+            exit 1
+          }
+          [[ "$REQUEST_ID_INPUT" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ ]] || { echo 'request_id contains unsafe characters' >&2; exit 1; }
+          declared_version=$(python3 ci/release-manifest.py version)
+          version="$declared_version"
+          if [[ "${{ github.event_name }}" = push ]]; then
+            tag_version="${GITHUB_REF_NAME#v}"
+            test "$tag_version" = "$declared_version" || {
+              echo "tag version $tag_version does not match workspace version $declared_version" >&2
+              exit 1
+            }
+          fi
+          ci/check metadata
+          {
+            echo "source_sha=$RELEASE_REF_INPUT"
+            echo "version=$version"
+            echo "request_id=$REQUEST_ID_INPUT"
+          } >> "$GITHUB_OUTPUT"
+
+  frontend:
+    name: Release frontend checks
+    needs: plan
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      github.event.repository.full_name == github.repository
+    runs-on: homelab
+    timeout-minutes: 15
+    steps:
+      - name: Check out the planned source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          persist-credentials: false
+      - name: Install locked frontend dependencies
+        run: npm ci --prefix web --ignore-scripts
+      - name: Run release frontend checks
+        run: ci/check frontend
+
+  rust:
+    name: Release Rust checks
+    needs: plan
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      github.event.repository.full_name == github.repository
+    runs-on: homelab-heavy
+    timeout-minutes: 60
+    steps:
+      - name: Check out the planned source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          persist-credentials: false
+      - name: Run release Rust checks
+        run: ci/container-build rust
+
+  browser:
+    name: Release browser build
+    needs: plan
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      github.event.repository.full_name == github.repository
+    runs-on: homelab-heavy
+    timeout-minutes: 25
+    steps:
+      - name: Check out the planned source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          persist-credentials: false
+      - name: Install locked frontend dependencies
+        run: npm ci --prefix web --ignore-scripts
+      - name: Build the release browser bundle
+        run: ci/check browser
+
+  package:
+    name: Package exact release source
+    needs: [plan, frontend, rust, browser]
+    if: >-
+      github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      github.event.repository.full_name == github.repository
+    runs-on: homelab-heavy
+    timeout-minutes: 75
+    steps:
+      - name: Check out the planned source revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.plan.outputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assemble RPM, Linux archive, and available bundles
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.plan.outputs.source_sha }}
+        run: ci/container-build package
+      - name: Upload immutable candidate bundle and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: app-manager-release-${{ needs.plan.outputs.version }}-${{ needs.plan.outputs.source_sha }}
+          path: |
+            dist/release/
+            dist/release-manifest.json
+            dist/package-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  release-gate:
+    name: Release assembly gate
+    needs: [plan, frontend, rust, browser, package]
+    if: >-
+      always() && github.repository == 'KanterLabs/app-manager' &&
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      github.event.repository.full_name == github.repository
+    runs-on: homelab
+    timeout-minutes: 5
+    steps:
+      - name: Require exact-source packaging to succeed
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          set -Eeuo pipefail
+          test "$PLAN_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$RUST_RESULT" = success
+          test "$BROWSER_RESULT" = success
+          test "$PACKAGE_RESULT" = success
+          printf '%s\n' 'Release candidate assembled; canonical publication remains INFRA164.'

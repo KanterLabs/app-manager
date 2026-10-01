@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local bundled UI only. No generic shell, filesystem or HTTP plugins.",
+  "windows": ["main"],
+  "webviews": ["main"],
+  "local": true,
+  "permissions": [
+    "core:default",
+    "allow-get-snapshot", "allow-save-machine", "allow-remove-machine",
+    "allow-test-machine", "allow-discover-workspaces", "allow-save-source",
+    "allow-remove-source", "allow-refresh-releases", "allow-install-app",
+    "allow-rollback-app", "allow-connect-broker", "allow-disconnect-broker",
+    "allow-refresh-broker", "allow-request-build"
+  ]
+}

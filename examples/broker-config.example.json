@@ -1,0 +1,44 @@
+{
+  "stateDir": "/var/lib/app-manager-broker",
+  "httpTimeoutSecs": 15,
+  "maxResponseBytes": 2097152,
+  "maxWebhookBodyBytes": 1048576,
+  "accounts": [
+    {
+      "account": "release-operator",
+      "tokenSha256Env": "APP_MANAGER_BROKER_RELEASE_OPERATOR_SHA256",
+      "repositoryIds": ["kanteredge-public"]
+    }
+  ],
+  "github": {
+    "appId": 123456,
+    "privateKeyEnv": "APP_MANAGER_GITHUB_APP_PRIVATE_KEY",
+    "webhookSecretEnv": "APP_MANAGER_GITHUB_WEBHOOK_SECRET"
+  },
+  "repositories": [
+    {
+      "id": "kanteredge-public",
+      "name": "KanterEdge public",
+      "provider": "github",
+      "owner": "example-owner",
+      "repository": "example-repository",
+      "workflow": "release.yml",
+      "defaultRef": "main",
+      "apiUrl": "http://127.0.0.1:3000",
+      "installationId": 987654,
+      "enabled": true
+    },
+    {
+      "id": "kanteredge-gitea-fixture",
+      "name": "Gitea fixture",
+      "provider": "gitea",
+      "owner": "example-owner",
+      "repository": "example-repository",
+      "workflow": "release.yaml",
+      "defaultRef": "main",
+      "apiUrl": "http://127.0.0.1:3001/api/v1",
+      "giteaTokenEnv": "APP_MANAGER_GITEA_SCOPED_TOKEN",
+      "enabled": false
+    }
+  ]
+}

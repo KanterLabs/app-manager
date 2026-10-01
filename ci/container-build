@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# Run the Rust or desktop packaging checks in the pinned Fedora builder image.
+# The repository is the only source bind mount; all mutable tool caches and the
+# container home are unique to this invocation and are removed on exit. Cargo
+# writes to target/fedora43 so host and Fedora outputs cannot be mixed.
+set -Eeuo pipefail
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT_DIR"
+
+usage() {
+  cat <<'EOF'
+Usage: ci/container-build <rust|package>
+
+The command builds ci/Dockerfile.fedora, then runs the selected existing
+entrypoint inside it. Docker-compatible container tooling is required. The
+wrapper does not mount a host home directory, ~/.cargo, or a Docker socket.
+EOF
+}
+
+die() {
+  printf 'ci/container-build: %s\n' "$*" >&2
+  exit 1
+}
+
+mode=${1:-}
+case "$mode" in
+  rust|package)
+    ;;
+  ''|-h|--help)
+    usage
+    [[ -n "$mode" ]] && exit 0 || exit 2
+    ;;
+  *)
+    usage >&2
+    die "unknown build mode: $mode"
+    ;;
+esac
+
+engine=${APP_MANAGER_CONTAINER_ENGINE:-docker}
+command -v "$engine" >/dev/null 2>&1 || die "container engine is unavailable: $engine"
+
+case "$engine" in
+  docker|podman)
+    ;;
+  *)
+    die 'APP_MANAGER_CONTAINER_ENGINE must be docker or podman'
+    ;;
+esac
+
+raw_repo=${GITHUB_REPOSITORY:-app-manager}
+repo_name=${raw_repo##*/}
+repo_name=$(printf '%s' "$repo_name" | tr -c 'A-Za-z0-9_.-' '-')
+[[ -n "$repo_name" ]] || repo_name=app-manager
+
+raw_run=${GITHUB_RUN_ID:-local-$$}
+run_name=$(printf '%s' "$raw_run" | tr -c 'A-Za-z0-9_.-' '-')
+[[ -n "$run_name" ]] || run_name=local
+
+cache_parent=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
+mkdir -p "$cache_parent"
+cache_root=$(mktemp -d "$cache_parent/app-manager-${repo_name}-${run_name}.XXXXXX")
+cleanup() {
+  rm -rf -- "$cache_root"
+}
+trap cleanup EXIT
+
+mkdir -p "$cache_root/cargo" "$cache_root/npm" "$cache_root/home"
+chmod 700 "$cache_root" "$cache_root/cargo" "$cache_root/npm" "$cache_root/home"
+
+image_ref="app-manager-fedora43-builder:${repo_name}-${run_name}"
+"$engine" build \
+  --file "$ROOT_DIR/ci/Dockerfile.fedora" \
+  --tag "$image_ref" \
+  "$ROOT_DIR/ci"
+
+host_uid=$(id -u)
+host_gid=$(id -g)
+
+case "$mode" in
+  rust)
+    container_command=$'set -Eeuo pipefail\nnpm ci --prefix web --ignore-scripts\nci/check rust'
+    ;;
+  package)
+    container_command=$'set -Eeuo pipefail\nnpm ci\nnpm ci --prefix web --ignore-scripts\nci/package'
+    ;;
+esac
+
+run_args=(
+  run
+  --rm
+  --user "${host_uid}:${host_gid}"
+  --workdir /workspace
+  --mount "type=bind,src=${ROOT_DIR},dst=/workspace"
+  --mount "type=bind,src=${cache_root}/cargo,dst=/cache/cargo"
+  --mount "type=bind,src=${cache_root}/npm,dst=/cache/npm"
+  --mount "type=bind,src=${cache_root}/home,dst=/home/appmanager"
+  --env CI=true
+  --env CARGO_HOME=/cache/cargo
+  --env CARGO_TARGET_DIR=/workspace/target/fedora43
+  --env CARGO_BUILD_JOBS=3
+  --env APP_MANAGER_BUILDER_IMAGE="$image_ref"
+  --env APP_MANAGER_BUILDER_BASE_DIGEST=sha256:2651ad743908b60acca6099f7a06ccb3602eb63a1b08cbd00cfa441a4d4afbe0
+  --env npm_config_cache=/cache/npm
+  --env RUSTUP_HOME=/opt/rustup
+  --env RUSTUP_TOOLCHAIN=1.96.0
+)
+
+# Preserve identity and packaging knobs without importing arbitrary host
+# environment state into the build container.
+for variable in GITHUB_SHA GITHUB_REPOSITORY RELEASE_VERSION RELEASE_COMMIT TAURI_BUNDLES; do
+  if [[ -n ${!variable+x} ]]; then
+    run_args+=(--env "${variable}=${!variable}")
+  fi
+done
+
+add_workspace_path_env() {
+  local variable=$1
+  command -v realpath >/dev/null 2>&1 || die "realpath is required when ${variable} is set"
+  local value=${!variable}
+  local value_abs
+  value_abs=$(realpath -m -- "$value")
+  case "$value_abs" in
+    "$ROOT_DIR"/*)
+      run_args+=(--env "${variable}=/workspace/${value_abs#"$ROOT_DIR"/}")
+      ;;
+    *)
+      die "${variable} must be below the checkout when using ci/container-build"
+      ;;
+  esac
+}
+
+for variable in OUTPUT_DIR RELEASE_MANIFEST_PATH PACKAGE_EVIDENCE_PATH; do
+  if [[ -n ${!variable:-} ]]; then
+    add_workspace_path_env "$variable"
+  fi
+done
+
+"$engine" "${run_args[@]}" "$image_ref" bash -Eeuo pipefail -c "$container_command"

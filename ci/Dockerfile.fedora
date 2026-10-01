@@ -1,0 +1,119 @@
+# Fedora 43 is the release/build target. Keep the base image immutable so a
+# builder image rebuild cannot silently change the userspace used for packages.
+FROM registry.fedoraproject.org/fedora@sha256:2651ad743908b60acca6099f7a06ccb3602eb63a1b08cbd00cfa441a4d4afbe0
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG NODE_VERSION=22.22.1
+ARG NODE_SHA256=9a6bc82f9b491279147219f6a18add1e18424dce90d41d2a5fcd69d4924ba3aa
+ARG RUST_VERSION=1.96.0
+ARG RUSTUP_VERSION=1.29.0
+ARG RUSTUP_SHA256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
+
+ENV CARGO_HOME=/opt/cargo \
+    RUSTUP_HOME=/opt/rustup \
+    CARGO_BUILD_JOBS=3 \
+    PATH=/opt/cargo/bin:/opt/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+USER root
+
+# These are Fedora package names, rather than Debian aliases. The GTK/WebKit
+# development packages are part of the desktop build boundary; the Xvfb and
+# D-Bus packages support headless smoke commands without a host desktop.
+RUN dnf -y install \
+      bash \
+      ca-certificates \
+      coreutils \
+      curl \
+      dbus-daemon \
+      dbus-devel \
+      dbus-tools \
+      file \
+      findutils \
+      gcc \
+      gcc-c++ \
+      git \
+      gzip \
+      gtk3-devel \
+      libappindicator-gtk3-devel \
+      librsvg2-devel \
+      libsoup3-devel \
+      make \
+      openssh-clients \
+      openssh-server \
+      openssl-devel \
+      pkgconf-pkg-config \
+      python3 \
+      python3-pyyaml \
+      rpm-build \
+      shadow-utils \
+      tar \
+      unzip \
+      webkit2gtk4.1-devel \
+      wget \
+      xorg-x11-server-Xvfb \
+      xz \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf \
+    && for package in \
+      dbus-daemon dbus-devel dbus-tools gtk3-devel libappindicator-gtk3-devel \
+      librsvg2-devel libsoup3-devel openssl-devel pkgconf-pkg-config \
+      python3-pyyaml rpm-build shadow-utils webkit2gtk4.1-devel \
+      xorg-x11-server-Xvfb; do \
+        rpm -q "$package" >/dev/null; \
+      done
+
+# Use the verified upstream Node archive instead of a mutable distro stream.
+RUN mkdir -p /opt/node \
+    && curl --fail --location --show-error \
+      "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" \
+      --output /tmp/node.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum --check --strict \
+    && tar --extract --xz --file /tmp/node.tar.xz --directory /opt/node --strip-components=1 \
+    && rm -f /tmp/node.tar.xz \
+    && corepack disable \
+    && node --version \
+    && npm --version
+
+# Rustup is used only to install the pinned toolchain into image-owned paths.
+# The workflow wrapper keeps the registry/target caches outside this image and
+# never mounts a developer's ~/.cargo or home directory.
+RUN mkdir -p /opt/cargo /opt/rustup \
+    && curl --fail --location --show-error \
+      "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/x86_64-unknown-linux-gnu/rustup-init" \
+      --output /tmp/rustup-init \
+    && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum --check --strict \
+    && chmod 0755 /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --profile minimal \
+      --default-toolchain "${RUST_VERSION}" \
+      --component clippy,rustfmt \
+    && rm -f /tmp/rustup-init \
+    && rustc --version \
+    && cargo --version \
+    && rustup toolchain list
+
+# Keep the native UI harness driver image-owned and reproducible. The harness
+# still owns its Xvfb/D-Bus lifecycle; this image only supplies the driver.
+RUN cargo install tauri-driver --version 2.1.0 --locked \
+    && tauri-driver --help
+
+# Runtime smoke tests need the OpenSSL CLI and WebKitWebDriver. Fedora 43
+# ships the latter in webkitgtk6.0; there is no separate webkit2gtk4.1driver
+# subpackage. Keep this small layer separate from the larger development
+# dependency layer above so the base package cache remains reusable.
+RUN dnf -y install openssl webkitgtk6.0 \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf \
+    && rpm -q openssl webkitgtk6.0 \
+    && command -v openssl \
+    && command -v WebKitWebDriver
+
+RUN useradd --create-home --home-dir /home/appmanager --shell /bin/bash appmanager \
+    && mkdir -p /workspace /cache \
+    && chmod 1777 /workspace /cache \
+    && pkg-config --exists gtk+-3.0 webkit2gtk-4.1 libsoup-3.0 openssl librsvg-2.0 \
+    && python3 -c 'import yaml'
+
+ENV HOME=/home/appmanager
+
+WORKDIR /workspace

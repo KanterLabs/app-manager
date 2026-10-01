@@ -1,0 +1,218 @@
+{
+  "state": {
+    "schema": 1,
+    "machines": [
+      {
+        "id": "demo-dev-vm",
+        "name": "Development VM",
+        "host": "dev-vm",
+        "user": "shane",
+        "port": 22,
+        "workspaceRoots": ["/home/shane/projects"]
+      }
+    ],
+    "sources": [
+      {
+        "id": "nfl-scores",
+        "name": "NFL Scores",
+        "manifestUrl": "https://releases.example.invalid/nfl-scores/manifest.json",
+        "artifactBaseUrl": "https://releases.example.invalid/nfl-scores/",
+        "receiptUrl": "https://releases.example.invalid/nfl-scores/receipt.json",
+        "channel": "stable",
+        "adapter": "gnome-extension",
+        "extensionUuid": "nfl-scores@example.invalid",
+        "gnomeVersions": [48, 49, 50]
+      },
+      {
+        "id": "actionview",
+        "name": "ActionView",
+        "manifestUrl": "https://releases.example.invalid/actionview/manifest.json",
+        "artifactBaseUrl": "https://releases.example.invalid/actionview/",
+        "receiptUrl": "https://releases.example.invalid/actionview/receipt.json",
+        "channel": "stable",
+        "adapter": "gnome-extension",
+        "extensionUuid": "actionview@example.invalid",
+        "gnomeVersions": [48, 49, 50]
+      },
+      {
+        "id": "helm",
+        "name": "Helm",
+        "manifestUrl": "https://releases.example.invalid/helm/manifest.json",
+        "artifactBaseUrl": "https://releases.example.invalid/helm/",
+        "receiptUrl": "https://releases.example.invalid/helm/receipt.json",
+        "channel": "stable",
+        "adapter": "rpm",
+        "gnomeVersions": []
+      }
+    ],
+    "releases": [
+      {
+        "appId": "nfl-scores",
+        "name": "NFL Scores",
+        "version": "0.5.0",
+        "tag": "v0.5.0",
+        "commit": "39ffee58cc20a2f1e5d0ac7f94dd5c8c7f9b1234",
+        "repository": "KanterLabs/nfl-scores",
+        "channel": "stable",
+        "verified": true,
+        "artifacts": [
+          {
+            "target": "linux-x86_64-gnome-48",
+            "name": "nfl-scores-0.5.0.zip",
+            "url": "https://releases.example.invalid/nfl-scores/0.5.0/nfl-scores.zip",
+            "sha256": "8a6f69cb7c503255f01db93b9d0f7d17bd4a5a7e04c6913bc58d9c3f6a5f2261",
+            "size": 184320
+          }
+        ],
+        "fetchedAt": "2026-10-01T09:30:00Z"
+      },
+      {
+        "appId": "actionview",
+        "name": "ActionView",
+        "version": "0.3.0",
+        "tag": "v0.3.0",
+        "commit": "1a9225b21f4f6b2fc3cf2d7c6940c49246ab5678",
+        "repository": "KanterLabs/actionview",
+        "channel": "stable",
+        "verified": true,
+        "artifacts": [
+          {
+            "target": "linux-x86_64-gnome-48",
+            "name": "actionview-0.3.0.zip",
+            "url": "https://releases.example.invalid/actionview/0.3.0/actionview.zip",
+            "sha256": "11ef9d218af1c95ad8dd48d6492f8ca09cde27f07b3e4a6d15e7ec60d4b8e224",
+            "size": 196608
+          }
+        ],
+        "fetchedAt": "2026-10-01T09:28:00Z"
+      },
+      {
+        "appId": "helm",
+        "name": "Helm",
+        "version": "0.1.0",
+        "tag": "v0.1.0",
+        "commit": "dc6a277a2bf9c5e8c9a7d12f00bb98dd44aa9012",
+        "repository": "KanterLabs/helm",
+        "channel": "stable",
+        "verified": true,
+        "artifacts": [
+          {
+            "target": "linux-x86_64",
+            "name": "helm-0.1.0.rpm",
+            "url": "https://releases.example.invalid/helm/0.1.0/helm.rpm",
+            "sha256": "c41df32bb80a1a6d1ffbfe30c83a8e798c0e25f2f0f66a50c3917f4b796756c0",
+            "size": 524288
+          }
+        ],
+        "fetchedAt": "2026-10-01T09:26:00Z"
+      }
+    ],
+    "installed": [
+      {
+        "appId": "nfl-scores",
+        "version": "0.4.0",
+        "adapter": "gnome-extension",
+        "extensionUuid": "nfl-scores@example.invalid",
+        "artifactSha256": "95a7e1c8f4b9c72d6d0f83b8e0eea7bfbf667429f8336b4ed4e1aa5e2edda13",
+        "retainedArtifact": "artifacts/nfl-scores/0.4.0.zip",
+        "installedAt": "2026-09-18T14:10:00Z",
+        "previous": null
+      },
+      {
+        "appId": "actionview",
+        "version": "0.2.0",
+        "adapter": "gnome-extension",
+        "extensionUuid": "actionview@example.invalid",
+        "artifactSha256": "2f679f2d2cc7d81f8309c24f2a093eb0e428422e73f88f06ba6370adf7502215",
+        "retainedArtifact": "artifacts/actionview/0.2.0.zip",
+        "installedAt": "2026-09-20T08:04:00Z",
+        "previous": null
+      },
+      {
+        "appId": "helm",
+        "version": "0.1.0",
+        "adapter": "rpm",
+        "artifactSha256": "c41df32bb80a1a6d1ffbfe30c83a8e798c0e25f2f0f66a50c3917f4b796756c0",
+        "retainedArtifact": "artifacts/helm/0.1.0.rpm",
+        "installedAt": "2026-09-15T16:45:00Z",
+        "previous": null
+      }
+    ],
+    "operations": [
+      {
+        "id": "demo-op-1",
+        "appId": "nfl-scores",
+        "action": "refresh",
+        "status": "verified",
+        "version": "0.5.0",
+        "message": "Published receipt verified",
+        "startedAt": "2026-10-01T09:29:00Z",
+        "completedAt": "2026-10-01T09:30:00Z"
+      }
+    ],
+    "broker": {
+      "url": "https://builds.example.invalid",
+      "account": "demo-account"
+    },
+    "repositories": [
+      {
+        "id": "nfl-repo",
+        "name": "NFL Scores",
+        "provider": "Gitea",
+        "owner": "KanterLabs",
+        "repository": "nfl-scores",
+        "workflow": "release.yml",
+        "defaultRef": "main",
+        "installationId": 1042
+      },
+      {
+        "id": "actionview-repo",
+        "name": "ActionView",
+        "provider": "Gitea",
+        "owner": "KanterLabs",
+        "repository": "actionview",
+        "workflow": "release.yml",
+        "defaultRef": "main",
+        "installationId": 1042
+      },
+      {
+        "id": "helm-repo",
+        "name": "Helm",
+        "provider": "Gitea",
+        "owner": "KanterLabs",
+        "repository": "helm",
+        "workflow": "release.yml",
+        "defaultRef": "main",
+        "installationId": 1042
+      }
+    ],
+    "builds": [
+      {
+        "id": "demo-build-104",
+        "repositoryId": "nfl-repo",
+        "commit": "39ffee58cc20a2f1e5d0ac7f94dd5c8c7f9b1234",
+        "reference": "main",
+        "provider": "Gitea",
+        "status": "verified",
+        "runUrl": "https://builds.example.invalid/runs/104",
+        "createdAt": "2026-10-01T09:20:00Z"
+      },
+      {
+        "id": "demo-build-103",
+        "repositoryId": "actionview-repo",
+        "commit": "1a9225b21f4f6b2fc3cf2d7c6940c49246ab5678",
+        "reference": "main",
+        "provider": "Gitea",
+        "status": "candidate",
+        "runUrl": "https://builds.example.invalid/runs/103",
+        "createdAt": "2026-10-01T09:12:00Z"
+      }
+    ]
+  },
+  "host": {
+    "os": "Fedora Linux",
+    "architecture": "x86_64",
+    "gnomeVersion": 48,
+    "dataDirectory": "/home/demo/.local/share/app-manager"
+  }
+}

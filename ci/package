@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+# Build the Linux desktop bundle and assemble a verifiable release directory.
+set -Eeuo pipefail
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT_DIR"
+
+OUTPUT_DIR=${OUTPUT_DIR:-dist/release}
+MANIFEST_PATH=${RELEASE_MANIFEST_PATH:-dist/release-manifest.json}
+EVIDENCE_PATH=${PACKAGE_EVIDENCE_PATH:-dist/package-evidence.json}
+PROJECT_NAME=${RELEASE_PROJECT:-app-manager}
+REPOSITORY=${GITHUB_REPOSITORY:-KanterLabs/app-manager}
+
+die() {
+  printf 'ci/package: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ci/package
+
+Environment overrides:
+  RELEASE_VERSION       version to put in the manifest (otherwise Cargo.toml)
+  RELEASE_COMMIT        exact 40-character source SHA (otherwise git HEAD)
+  TAURI_BUNDLES        comma-separated Tauri targets (default rpm,deb)
+  OUTPUT_DIR            package directory (default dist/release)
+  RELEASE_TOOLS         optional pinned shared release_tools.py verifier
+  SKIP_TAURI_BUILD=1    collect an already-built bundle for local diagnostics
+
+The command never publishes. It builds app-manager-cli and app-manager-broker
+with --locked before Tauri, creates a Linux archive containing app-manager-desktop,
+appctl, app-manager-broker, LICENSE, and README.md, then writes SHA256SUMS, a
+release-tools schema-1 manifest, and machine-readable package evidence for the
+INFRA164 integration. Native desktop dependencies must already be available on
+the runner.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+[[ $# -eq 0 ]] || die "unknown argument: $1"
+[[ "$PROJECT_NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die 'RELEASE_PROJECT contains unsafe archive characters'
+
+command -v python3 >/dev/null 2>&1 || die 'python3 is required'
+command -v sha256sum >/dev/null 2>&1 || die 'sha256sum is required'
+command -v tar >/dev/null 2>&1 || die 'tar is required'
+command -v git >/dev/null 2>&1 || die 'git is required'
+command -v realpath >/dev/null 2>&1 || die 'realpath is required'
+
+VERSION=$(python3 ci/release-manifest.py version)
+COMMIT=${RELEASE_COMMIT:-${GITHUB_SHA:-}}
+if [[ -z "$COMMIT" ]]; then
+  COMMIT=$(git rev-parse HEAD 2>/dev/null || true)
+fi
+[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || die 'RELEASE_COMMIT, GITHUB_SHA, or git HEAD must be an exact lower-case 40-character SHA'
+
+dist_root=$(cd -- "$ROOT_DIR/dist" 2>/dev/null && pwd || true)
+[[ -n "$dist_root" ]] || { mkdir -p "$ROOT_DIR/dist"; dist_root=$(cd -- "$ROOT_DIR/dist" && pwd); }
+output_abs=$(realpath -m -- "$OUTPUT_DIR")
+manifest_abs=$(realpath -m -- "$MANIFEST_PATH")
+evidence_abs=$(realpath -m -- "$EVIDENCE_PATH")
+case "$output_abs" in
+  "$dist_root"/*) ;;
+  *) die 'OUTPUT_DIR must be a reviewed subdirectory below dist/' ;;
+esac
+case "$manifest_abs" in
+  "$dist_root"/*) ;;
+  *) die 'RELEASE_MANIFEST_PATH must be below dist/' ;;
+esac
+case "$evidence_abs" in
+  "$dist_root"/*) ;;
+  *) die 'PACKAGE_EVIDENCE_PATH must be below dist/' ;;
+esac
+case "$manifest_abs" in
+  "$output_abs"/*) die 'RELEASE_MANIFEST_PATH must be outside OUTPUT_DIR' ;;
+esac
+case "$evidence_abs" in
+  "$output_abs"/*) die 'PACKAGE_EVIDENCE_PATH must be outside OUTPUT_DIR' ;;
+esac
+[[ ! -e "$output_abs" && ! -L "$output_abs" ]] || die "output directory already exists: $output_abs (choose a fresh dist subdirectory)"
+[[ ! -e "$manifest_abs" && ! -L "$manifest_abs" ]] || die "release manifest already exists: $manifest_abs"
+[[ ! -e "$evidence_abs" && ! -L "$evidence_abs" ]] || die "package evidence already exists: $evidence_abs"
+
+stage_root=$(mktemp -d "$dist_root/.app-manager-package.XXXXXX")
+stage_output="$stage_root/release"
+stage_manifest="$stage_root/release-manifest.json"
+stage_evidence="$stage_root/package-evidence.json"
+mkdir -p "$stage_output"
+cleanup_stage() {
+  if [[ -d "$stage_root" ]]; then
+    rm -rf -- "$stage_root"
+  fi
+}
+trap cleanup_stage EXIT
+
+if [[ "${SKIP_TAURI_BUILD:-0}" != 1 ]]; then
+  [[ -f package.json ]] || die 'root package.json is required for Tauri packaging'
+  command -v npm >/dev/null 2>&1 || die 'npm is required for Tauri packaging'
+  command -v cargo >/dev/null 2>&1 || die 'cargo is required for CLI and broker packaging'
+  [[ -d node_modules ]] || die 'root node_modules is missing; run npm ci first'
+  ci/check toolchain core
+  cargo build --release -p app-manager-cli -p app-manager-broker --locked
+  bundles=${TAURI_BUNDLES:-rpm,deb}
+  if [[ -z "${TAURI_BUNDLES:-}" && "$bundles" == rpm,deb ]] && ! command -v dpkg-deb >/dev/null 2>&1; then
+    printf '%s\n' 'ci/package: dpkg-deb is unavailable; building the required RPM target only' >&2
+    bundles=rpm
+  fi
+  [[ "$bundles" =~ ^[A-Za-z0-9_,.-]+$ ]] || die 'TAURI_BUNDLES contains unsafe characters'
+  ci/check toolchain package
+  npm run tauri -- build --bundles "$bundles"
+fi
+
+target_root=${CARGO_TARGET_DIR:-target}
+BUNDLE_DIR=${TAURI_BUNDLE_DIR:-$target_root/release/bundle}
+if [[ -d "$BUNDLE_DIR" ]]; then
+  while IFS= read -r -d '' artifact; do
+    case "$artifact" in
+      *.rpm|*.deb|*.AppImage|*.tar.gz|*.tar.xz|*.tar.zst|*.zip)
+        destination="$stage_output/$(basename -- "$artifact")"
+        [[ ! -e "$destination" ]] || die "duplicate package filename: $(basename -- "$artifact")"
+        cp -- "$artifact" "$destination"
+        ;;
+    esac
+  done < <(find "$BUNDLE_DIR" -type f -print0 | sort -z)
+fi
+
+if [[ -z "$(find "$stage_output" -maxdepth 1 -type f -name '*.rpm' -print -quit)" ]]; then
+  die 'Tauri packaging did not produce an RPM; Fedora-target releases require the rpm bundle'
+fi
+
+# Always create a companion Linux archive with the exact release executables
+# and repository documents. The Tauri RPM/DEB remain the native package
+# outputs; this archive gives the CLI and broker a reviewable distribution
+# path without selecting an arbitrary executable from the target directory.
+portable_archive=''
+archive_root="$stage_root/portable"
+archive_name_root="${PROJECT_NAME}-${VERSION}"
+archive_payload="$archive_root/$archive_name_root"
+missing_payload=()
+for executable in app-manager-desktop appctl app-manager-broker; do
+  binary="$target_root/release/$executable"
+  if [[ ! -f "$binary" || -L "$binary" || ! -x "$binary" ]]; then
+    missing_payload+=("$binary")
+  fi
+done
+for document in LICENSE README.md; do
+  if [[ ! -f "$document" || -L "$document" ]]; then
+    missing_payload+=("$document")
+  fi
+done
+
+if (( ${#missing_payload[@]} > 0 )); then
+  if [[ "${SKIP_TAURI_BUILD:-0}" == 1 ]]; then
+    printf 'ci/package: skipping portable archive in diagnostic mode; missing exact payload: %s\n' \
+      "${missing_payload[*]}" >&2
+  else
+    die "portable archive payload is incomplete: ${missing_payload[*]}"
+  fi
+else
+  arch=$(uname -m)
+  case "$arch" in
+    x86_64|amd64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+  esac
+  portable_archive="$stage_output/${PROJECT_NAME}-linux-${arch}.tar.gz"
+  [[ ! -e "$portable_archive" ]] || die "duplicate portable archive filename: $(basename -- "$portable_archive")"
+  mkdir -p "$archive_payload"
+  for executable in app-manager-desktop appctl app-manager-broker; do
+    cp -- "$target_root/release/$executable" "$archive_payload/$executable"
+  done
+  cp -- LICENSE README.md "$archive_payload/"
+  tar --create --gzip --file "$portable_archive" \
+    --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+    --directory "$archive_root" "$archive_name_root"
+fi
+
+mapfile -t payloads < <(find "$stage_output" -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort)
+(( ${#payloads[@]} > 0 )) || die 'no package artifacts were assembled'
+(
+  cd "$stage_output"
+  sha256sum -- "${payloads[@]}" > SHA256SUMS
+)
+
+python3 ci/release-manifest.py manifest \
+  --artifacts "$stage_output" \
+  --project "$PROJECT_NAME" \
+  --repository "$REPOSITORY" \
+  --version "$VERSION" \
+  --commit "$COMMIT" \
+  --output "$stage_manifest"
+
+if [[ -n "${RELEASE_TOOLS:-}" ]]; then
+  [[ -f "$RELEASE_TOOLS" ]] || die "RELEASE_TOOLS is not a file: $RELEASE_TOOLS"
+  python3 "$RELEASE_TOOLS" verify --manifest "$stage_manifest" --artifacts "$stage_output"
+else
+  python3 ci/release-manifest.py verify --manifest "$stage_manifest" --artifacts "$stage_output"
+fi
+
+builder_metadata="$stage_root/builder-metadata.json"
+builder_args=(builder --output "$builder_metadata")
+if [[ -n "$portable_archive" ]]; then
+  builder_args+=(--archive "$portable_archive")
+fi
+python3 ci/release-manifest.py "${builder_args[@]}"
+
+python3 ci/release-manifest.py evidence \
+  --manifest "$stage_manifest" \
+  --artifacts "$stage_output" \
+  --builder-metadata "$builder_metadata" \
+  --output "$stage_evidence"
+
+mkdir -p "$(dirname -- "$output_abs")" "$(dirname -- "$manifest_abs")" "$(dirname -- "$evidence_abs")"
+mv -- "$stage_output" "$output_abs"
+mv -- "$stage_manifest" "$manifest_abs"
+mv -- "$stage_evidence" "$evidence_abs"
+stage_root=''
+
+printf 'ci/package: assembled %s (%s)\n' "$output_abs" "$COMMIT"

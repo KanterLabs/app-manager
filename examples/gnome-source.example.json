@@ -1,0 +1,11 @@
+{
+  "id": "example-extension",
+  "name": "Example extension",
+  "manifestUrl": "https://releases.example.invalid/example-extension/v0.1.0/release-manifest.json",
+  "artifactBaseUrl": "https://releases.example.invalid/example-extension/v0.1.0/",
+  "receiptUrl": "https://releases.example.invalid/example-extension/v0.1.0/published-receipt.json",
+  "channel": "stable",
+  "adapter": "gnome-extension",
+  "extensionUuid": "example-extension@example.invalid",
+  "gnomeVersions": [48, 49, 50]
+}

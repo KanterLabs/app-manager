@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/core", "crates/broker", "crates/cli", "src-tauri"]
+default-members = ["crates/core", "crates/broker", "crates/cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.96"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "fs", "sync", "net", "io-util", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+sha2 = "0.10"
+hex = "0.4"
+url = { version = "2", features = ["serde"] }
+tempfile = "3"
+fs2 = "0.4"
+app-manager-core = { path = "crates/core" }
+
+[profile.release]
+lto = "thin"
+strip = true

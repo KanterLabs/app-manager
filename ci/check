@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# Run one bounded class of checks locally or from a workflow.
+set -Eeuo pipefail
+
+ROOT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+cd "$ROOT_DIR"
+
+usage() {
+  cat <<'EOF'
+Usage: ci/check <metadata|frontend|browser|rust|toolchain|release|all> [args]
+
+Aliases with a leading -- are accepted for workflow adapters:
+  --config-only  metadata
+  --frontend     frontend
+  --browser      browser
+  --rust         rust
+
+The script never installs dependencies. Run npm ci commands from the
+contributor guide first, and use the homelab-heavy runner for Rust, browser,
+and desktop packaging checks.
+EOF
+}
+
+die() {
+  printf 'ci/check: %s\n' "$*" >&2
+  exit 1
+}
+
+require_file() {
+  [[ -f "$1" ]] || die "required file is missing: $1"
+}
+
+metadata() {
+  local shell_file json_file
+  require_file ci/check
+  require_file ci/container-build
+  require_file ci/Dockerfile.fedora
+  require_file ci/package
+  require_file ci/release-manifest.py
+
+  # Keep executable scripts parseable before any runtime-dependent checks.
+  while IFS= read -r -d '' shell_file; do
+    bash -n "$shell_file"
+  done < <(find ci -maxdepth 1 -type f \( -name '*.sh' -o -name 'check' -o -name 'container-build' -o -name 'package' \) -print0 | sort -z)
+
+  PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+from pathlib import Path
+
+for path in sorted(Path("ci").glob("*.py")):
+    source = path.read_text(encoding="utf-8")
+    compile(source, str(path), "exec")
+PY
+
+  while IFS= read -r -d '' json_file; do
+    python3 - "$json_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    json.load(handle)
+PY
+  done < <(find . \
+    -path './.git' -prune -o \
+    -path './target' -prune -o \
+    -path './node_modules' -prune -o \
+    -path './web/node_modules' -prune -o \
+    -type f -name '*.json' -print0 | sort -z)
+
+  # PyYAML is part of the homelab metadata image. A developer without it can
+  # still use every code check; CI fails closed if a workflow cannot be parsed.
+  if python3 - <<'PY' >/dev/null 2>&1
+import yaml  # noqa: F401
+PY
+  then
+    while IFS= read -r -d '' yaml_file; do
+      python3 - "$yaml_file" <<'PY'
+import sys
+import yaml
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    list(yaml.safe_load_all(handle))
+PY
+    done < <(find .github .gitea -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 2>/dev/null | sort -z)
+  else
+    printf '%s\n' 'ci/check: PyYAML unavailable; skipped local workflow YAML parse (CI image must provide it)' >&2
+  fi
+
+  if [[ -d .github/workflows ]]; then
+    if grep -R -nE 'runs-on:[[:space:]]*(ubuntu-latest|self-hosted)([[:space:]]|$)' .github/workflows; then
+      die 'workflow selected an unmanaged runner label'
+    fi
+    if grep -R -nE 'uses:[[:space:]]+[^@[:space:]]+@v[0-9]' .github/workflows; then
+      die 'workflow action references must be pinned to an immutable commit'
+    fi
+  fi
+
+  python3 ci/release-manifest.py --help >/dev/null
+  grep -Fq 'FROM registry.fedoraproject.org/fedora@sha256:2651ad743908b60acca6099f7a06ccb3602eb63a1b08cbd00cfa441a4d4afbe0' ci/Dockerfile.fedora \
+    || die 'Fedora builder base image must remain digest-pinned'
+  grep -Fq 'ARG NODE_VERSION=22.22.1' ci/Dockerfile.fedora \
+    || die 'Fedora builder Node version is not pinned to the approved release'
+  grep -Fq 'ARG RUST_VERSION=1.96.0' ci/Dockerfile.fedora \
+    || die 'Fedora builder Rust version is not pinned to the approved release'
+  grep -Fq 'CARGO_BUILD_JOBS=3' ci/Dockerfile.fedora \
+    || die 'Fedora builder Cargo parallelism must remain bounded'
+  grep -Fq 'dnf -y install openssl webkitgtk6.0' ci/Dockerfile.fedora \
+    || die 'Fedora builder runtime smoke dependencies are missing'
+  grep -Fq 'cargo install tauri-driver --version 2.1.0 --locked' ci/Dockerfile.fedora \
+    || die 'Fedora builder tauri-driver version is not pinned'
+  grep -Fq 'ARG NODE_SHA256=9a6bc82f9b491279147219f6a18add1e18424dce90d41d2a5fcd69d4924ba3aa' ci/Dockerfile.fedora \
+    || die 'Fedora builder Node checksum is not the approved value'
+  grep -Fq 'ARG RUSTUP_SHA256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10' ci/Dockerfile.fedora \
+    || die 'Fedora builder rustup checksum is not the approved value'
+  grep -Fq -- '--env CARGO_TARGET_DIR=/workspace/target/fedora43' ci/container-build \
+    || die 'Fedora builder must use an isolated Cargo target directory'
+  printf '%s\n' 'ci/check metadata: ok'
+}
+
+frontend() {
+  require_file web/package.json
+  command -v npm >/dev/null 2>&1 || die 'npm is required for frontend checks'
+  npm --prefix web run typecheck
+  npm --prefix web run test
+  printf '%s\n' 'ci/check frontend: ok'
+}
+
+browser() {
+  require_file web/package.json
+  command -v npm >/dev/null 2>&1 || die 'npm is required for browser checks'
+  npm --prefix web run build
+  # Browser suites are optional until the web package exposes an e2e script;
+  # a build still proves that the production bundle can be assembled.
+  if PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import json
+from pathlib import Path
+
+package = json.loads(Path("web/package.json").read_text(encoding="utf-8"))
+script = package.get("scripts", {}).get("e2e") if isinstance(package, dict) else None
+raise SystemExit(0 if isinstance(script, str) and script.strip() else 1)
+PY
+  then
+    npm --prefix web run e2e
+  fi
+  printf '%s\n' 'ci/check browser: ok'
+}
+
+rust() {
+  require_file web/package.json
+  command -v npm >/dev/null 2>&1 || die 'npm is required to build the web assets before Rust checks'
+  command -v cargo >/dev/null 2>&1 || die 'cargo is required for Rust checks'
+  npm --prefix web run build
+  cargo fmt --all -- --check
+  cargo check --workspace --all-targets --locked
+  cargo test --workspace --all-targets --locked
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+  printf '%s\n' 'ci/check rust: ok'
+}
+
+toolchain() {
+  local package_mode=${1:-core}
+  local tool
+  for tool in cargo rustc node npm python3 git sha256sum tar; do
+    command -v "$tool" >/dev/null 2>&1 || die "required tool is unavailable: $tool"
+  done
+  [[ "$package_mode" == core || "$package_mode" == package ]] || die "unknown toolchain mode: $package_mode"
+  if [[ "$package_mode" == package ]]; then
+    command -v pkg-config >/dev/null 2>&1 || die 'pkg-config is required for desktop packaging'
+    local pkg
+    for pkg in webkit2gtk-4.1 gtk+-3.0 libsoup-3.0 openssl librsvg-2.0; do
+      pkg-config --exists "$pkg" || die "native desktop dependency is unavailable through pkg-config: $pkg"
+    done
+  fi
+  printf '%s\n' "ci/check toolchain ($package_mode): ok"
+}
+
+release() {
+  local artifact_dir=${1:-dist/release}
+  local manifest=${2:-dist/release-manifest.json}
+  require_file "$manifest"
+  [[ -d "$artifact_dir" ]] || die "release artifact directory is missing: $artifact_dir"
+  python3 ci/release-manifest.py verify --manifest "$manifest" --artifacts "$artifact_dir"
+  printf '%s\n' 'ci/check release: ok'
+}
+
+all_checks() {
+  metadata
+  frontend
+  browser
+  rust
+}
+
+main() {
+  local mode=${1:-}
+  case "$mode" in
+    ''|-h|--help)
+      usage
+      [[ -n "$mode" ]] && return 0 || return 2
+      ;;
+    --config-only|--metadata|metadata)
+      metadata
+      ;;
+    --frontend|frontend)
+      frontend
+      ;;
+    --browser|browser)
+      browser
+      ;;
+    --rust|rust)
+      rust
+      ;;
+    toolchain)
+      shift
+      toolchain "${1:-core}"
+      ;;
+    release|release-artifact)
+      shift
+      release "${1:-dist/release}" "${2:-dist/release-manifest.json}"
+      ;;
+    all)
+      all_checks
+      ;;
+    *)
+      usage >&2
+      die "unknown check mode: $mode"
+      ;;
+  esac
+}
+
+main "$@"
