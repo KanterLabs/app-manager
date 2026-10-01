@@ -74,6 +74,9 @@ case "$evidence_abs" in
   "$dist_root"/*) ;;
   *) die 'PACKAGE_EVIDENCE_PATH must be below dist/' ;;
 esac
+[[ "$manifest_abs" != "$evidence_abs" ]] || die 'RELEASE_MANIFEST_PATH and PACKAGE_EVIDENCE_PATH must be different files'
+[[ "$manifest_abs" != "$output_abs" ]] || die 'RELEASE_MANIFEST_PATH must be outside OUTPUT_DIR'
+[[ "$evidence_abs" != "$output_abs" ]] || die 'PACKAGE_EVIDENCE_PATH must be outside OUTPUT_DIR'
 case "$manifest_abs" in
   "$output_abs"/*) die 'RELEASE_MANIFEST_PATH must be outside OUTPUT_DIR' ;;
 esac
@@ -86,9 +89,10 @@ esac
 
 stage_root=$(mktemp -d "$dist_root/.app-manager-package.XXXXXX")
 stage_output="$stage_root/release"
-stage_manifest="$stage_root/release-manifest.json"
-stage_evidence="$stage_root/package-evidence.json"
+stage_manifest="$stage_root/manifest/$(basename -- "$manifest_abs")"
+stage_evidence="$stage_root/evidence/$(basename -- "$evidence_abs")"
 mkdir -p "$stage_output"
+mkdir -p "$(dirname -- "$stage_manifest")" "$(dirname -- "$stage_evidence")"
 cleanup_stage() {
   if [[ -d "$stage_root" ]]; then
     rm -rf -- "$stage_root"
@@ -226,6 +230,5 @@ mkdir -p "$(dirname -- "$output_abs")" "$(dirname -- "$manifest_abs")" "$(dirnam
 mv -- "$stage_output" "$output_abs"
 mv -- "$stage_manifest" "$manifest_abs"
 mv -- "$stage_evidence" "$evidence_abs"
-stage_root=''
 
 printf 'ci/package: assembled %s (%s)\n' "$output_abs" "$COMMIT"
