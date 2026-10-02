@@ -126,7 +126,7 @@ jobs:
       (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
       (github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: homelab
+    runs-on: ${{ github.server_url == 'https://github.com' && 'homelab-tiny' || 'homelab' }}
     timeout-minutes: 5
     steps:
       - name: Require every declared check
